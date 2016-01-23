@@ -1,0 +1,19 @@
+OZWPAN USB Host Controller Driver
+---------------------------------
+
+This repository contains a standalone driver for the OZWPAN USB devices.
+The source was taken from the Linux-Kernel 4.1.15. 
+
+Pairing:
+
+# wpa_cli -i wlan0
+> p2p_group_add
+OK
+<3>P2P-GROUP-STARTED ...
+> quit
+
+# wpa_cli -i p2p-wlan0-0
+
+Interactive mode
+> wps_pbc
+
