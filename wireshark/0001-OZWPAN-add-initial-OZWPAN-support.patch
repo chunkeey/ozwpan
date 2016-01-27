@@ -1,4 +1,4 @@
-From 6a49dd108e581431b3faa1aab647808c5cb65178 Mon Sep 17 00:00:00 2001
+From 7dafc6939b6319b043007383748624cdd188abfe Mon Sep 17 00:00:00 2001
 From: Christian Lamparter <chunkeey@googlemail.com>
 Date: Tue, 26 Jan 2016 23:42:20 +0100
 Subject: [PATCH] OZWPAN: add initial OZWPAN support
@@ -14,9 +14,9 @@ Signed-off-by: Christian Lamparter <chunkeey@googlemail.com>
 ---
  epan/CMakeLists.txt                |   1 +
  epan/dissectors/packet-ethertype.c |   1 +
- epan/dissectors/packet-ozwpan.c    | 824 +++++++++++++++++++++++++++++++++++++
+ epan/dissectors/packet-ozwpan.c    | 849 +++++++++++++++++++++++++++++++++++++
  epan/etypes.h                      |   4 +
- 4 files changed, 830 insertions(+)
+ 4 files changed, 855 insertions(+)
  create mode 100644 epan/dissectors/packet-ozwpan.c
 
 diff --git a/epan/CMakeLists.txt b/epan/CMakeLists.txt
@@ -45,10 +45,10 @@ index 9f4de89..e11e7bf 100644
  
 diff --git a/epan/dissectors/packet-ozwpan.c b/epan/dissectors/packet-ozwpan.c
 new file mode 100644
-index 0000000..e0fbe77
+index 0000000..471333e
 --- /dev/null
 +++ b/epan/dissectors/packet-ozwpan.c
-@@ -0,0 +1,824 @@
+@@ -0,0 +1,849 @@
 +/* packet-ozwpan.c
 + * Routines for OZWPAN dissection
 + * Copyright 2016, Christian Lamparter <chunkeey@googlemail.com>
@@ -99,14 +99,14 @@ index 0000000..e0fbe77
 +/* Initialize the protocol and registered fields */
 +static int proto_ozwpan = -1;
 +
-+static int hf_ozwpan_hdr = -1;
 +static int hf_ozwpan_control = -1;
 +static int hf_ozwpan_version = -1;
-+static int hf_ozwpan_flag = -1;
-+static int hf_ozwpan_flag_ack = -1;
-+static int hf_ozwpan_flag_isoc = -1;
-+static int hf_ozwpan_flag_more_data = -1;
-+static int hf_ozwpan_flag_request_ack = -1;
++static int hf_ozwpan_flags = -1;
++static int hf_ozwpan_flags_ack = -1;
++static int hf_ozwpan_flags_isoc = -1;
++static int hf_ozwpan_flags_more_data = -1;
++static int hf_ozwpan_flags_request_ack = -1;
++static int hf_ozwpan_ms_data = -1;
 +
 +static int hf_ozwpan_last_pkt_num = -1;
 +static int hf_ozwpan_pkt_num = -1;
@@ -145,9 +145,8 @@ index 0000000..e0fbe77
 +
 +/* Initialize the subtree pointers */
 +static gint ett_ozwpan = -1;
-+static gint ett_ozwpan_header  = -1;
-+static gint ett_ozwpan_header_control = -1;
-+static gint ett_ozwpan_header_control_flag = -1;
++static gint ett_ozwpan_control = -1;
++static gint ett_ozwpan_control_flag = -1;
 +static gint ett_ozwpan_element = -1;
 +
 +/* OZWPAN protocol */
@@ -289,27 +288,27 @@ index 0000000..e0fbe77
 +};
 +
 +static const value_string usb_type[] = {
-+    {OZ_GET_DESC_REQ,               "Get descriptor request" },
-+    {OZ_GET_DESC_RSP,               "Get descriptor response" },
-+    {OZ_SET_CONFIG_REQ,             "Set configuration request" },
-+    {OZ_SET_CONFIG_RSP,             "Set configuration response" },
-+    {OZ_SET_INTERFACE_REQ,          "Set interface request" },
-+    {OZ_SET_INTERFACE_RSP,          "Set interface response" },
-+    {OZ_VENDOR_CLASS_REQ,           "Vendor class request" },
-+    {OZ_VENDOR_CLASS_RSP,           "Vendor class response" },
-+    {OZ_GET_STATUS_REQ,             "Get status request" },
-+    {OZ_GET_STATUS_RSP,             "Get status response" },
-+    {OZ_CLEAR_FEATURE_REQ,          "Clear Feature request" },
-+    {OZ_CLEAR_FEATURE_RSP,          "Clear feature response" },
-+    {OZ_SET_FEATURE_REQ,            "Set feature request" },
-+    {OZ_SET_FEATURE_RSP,            "Set feature response" },
-+    {OZ_GET_CONFIGURATION_REQ,      "Get configuration request" },
-+    {OZ_GET_CONFIGURATION_RSP,      "Get configuration response" },
-+    {OZ_GET_INTERFACE_REQ,          "Get interface request" },
-+    {OZ_GET_INTERFACE_RSP,          "Get interface response" },
-+    {OZ_SYNCH_FRAME_REQ,            "Synch Frame request" },
-+    {OZ_SYNCH_FRAME_RSP,            "Synch Frame response" },
-+    {OZ_USB_ENDPOINT_DATA,          "Endpoint Data" },
++    {OZ_GET_DESC_REQ,               "GET DESCRIPTOR Request" },
++    {OZ_GET_DESC_RSP,               "GET DESCRIPTOR Response" },
++    {OZ_SET_CONFIG_REQ,             "SET CONFIGURATION Request" },
++    {OZ_SET_CONFIG_RSP,             "SET CONFIGURATION Response" },
++    {OZ_SET_INTERFACE_REQ,          "SET INTERFACE Request" },
++    {OZ_SET_INTERFACE_RSP,          "SET INTERFACE Response" },
++    {OZ_VENDOR_CLASS_REQ,           "Vendor Class Request" },
++    {OZ_VENDOR_CLASS_RSP,           "Vendor Class Response" },
++    {OZ_GET_STATUS_REQ,             "GET STATUS Request" },
++    {OZ_GET_STATUS_RSP,             "GET STATUS Response" },
++    {OZ_CLEAR_FEATURE_REQ,          "CLEAR FEATURE Request" },
++    {OZ_CLEAR_FEATURE_RSP,          "CLEAR FEATURE Response" },
++    {OZ_SET_FEATURE_REQ,            "SET FEATRUE Request" },
++    {OZ_SET_FEATURE_RSP,            "SET FEATRUE Response" },
++    {OZ_GET_CONFIGURATION_REQ,      "GET CONFIGURATION Request" },
++    {OZ_GET_CONFIGURATION_RSP,      "GET CONFIGURATION Response" },
++    {OZ_GET_INTERFACE_REQ,          "GET INTERFACE Request" },
++    {OZ_GET_INTERFACE_RSP,          "GET INTERFACE Response" },
++    {OZ_SYNCH_FRAME_REQ,            "Synch Frame Request" },
++    {OZ_SYNCH_FRAME_RSP,            "Synch Frame Response" },
++    {OZ_USB_ENDPOINT_DATA,          "ENDPOINT DATA" },
 +    {0,                             NULL }
 +};
 +
@@ -330,7 +329,7 @@ index 0000000..e0fbe77
 +
 +static int
 +dissect_connect_req(packet_info *pinfo, proto_tree *tree, tvbuff_t *tvb, int offset, int tag_len) {
-+    col_add_fstr(pinfo->cinfo, COL_INFO, "Connect Request");
++    col_set_str(pinfo->cinfo, COL_INFO, "Connect Request");
 +
 +    proto_tree_add_item(tree, hf_ozwpan_mode, tvb, offset, 1, ENC_LITTLE_ENDIAN);
 +    proto_tree_add_item(tree, hf_ozwpan_pd_info, tvb, offset + 17, 1, ENC_LITTLE_ENDIAN);
@@ -347,7 +346,7 @@ index 0000000..e0fbe77
 +
 +static int
 +dissect_connect_rsp(packet_info *pinfo, proto_tree *tree, tvbuff_t *tvb, int offset, int tag_len) {
-+    col_add_fstr(pinfo->cinfo, COL_INFO, "Connect Response");
++    col_set_str(pinfo->cinfo, COL_INFO, "Connect Response");
 +
 +    proto_tree_add_item(tree, hf_ozwpan_mode, tvb, offset, 1, ENC_LITTLE_ENDIAN);
 +    proto_tree_add_item(tree, hf_ozwpan_status, tvb, offset + 1, 1, ENC_LITTLE_ENDIAN);
@@ -358,13 +357,13 @@ index 0000000..e0fbe77
 +
 +static int
 +dissect_disconnect(packet_info *pinfo, int offset, int tag_len) {
-+    col_add_fstr(pinfo->cinfo, COL_INFO, "Disconnect");
++    col_set_str(pinfo->cinfo, COL_INFO, "Disconnect");
 +    return offset + tag_len;
 +}
 +
 +static int
 +dissect_update_param_req(packet_info *pinfo, proto_tree *tree, tvbuff_t *tvb, int offset, int tag_len) {
-+    col_add_fstr(pinfo->cinfo, COL_INFO, "Parameter Update Request");
++    col_set_str(pinfo->cinfo, COL_INFO, "Parameter Update Request");
 +    proto_tree_add_item(tree, hf_ozwpan_presleep, tvb, offset + 16, 1, ENC_LITTLE_ENDIAN);
 +    proto_tree_add_item(tree, hf_ozwpan_host_vendor, tvb, offset + 18, 1, ENC_LITTLE_ENDIAN);
 +    proto_tree_add_item(tree, hf_ozwpan_keep_alive, tvb, offset + 19, 1, ENC_LITTLE_ENDIAN);
@@ -373,7 +372,7 @@ index 0000000..e0fbe77
 +
 +static int
 +dissect_farewell_req(packet_info *pinfo, proto_tree *tree, tvbuff_t *tvb, int offset, int tag_len) {
-+    col_add_fstr(pinfo->cinfo, COL_INFO, "Farewell Request");
++    col_set_str(pinfo->cinfo, COL_INFO, "Farewell Request");
 +    proto_tree_add_item(tree, hf_ozwpan_ep_num, tvb, offset, 1, ENC_LITTLE_ENDIAN);
 +    proto_tree_add_item(tree, hf_ozwpan_index, tvb, offset + 1, 1, ENC_LITTLE_ENDIAN);
 +    proto_tree_add_item(tree, hf_ozwpan_report, tvb, offset + 2, tag_len - 2, ENC_LITTLE_ENDIAN);
@@ -387,33 +386,30 @@ index 0000000..e0fbe77
 +    if (tvb_reported_length_remaining(tvb, offset + 4) < 4)
 +        return;
 +
-+    col_add_fstr(pinfo->cinfo, COL_INFO, "USB Data");
-+    proto_tree_add_item(tree, hf_ozwpan_ep_num, tvb, offset + 3, 1, ENC_LITTLE_ENDIAN);
-+    proto_tree_add_item(tree, hf_ozwpan_usb_format, tvb, offset + 4, 1, ENC_LITTLE_ENDIAN);
-+    format = tvb_get_guint8(tvb, offset + 4);
++    col_set_str(pinfo->cinfo, COL_INFO, "USB Data");
++    proto_tree_add_item(tree, hf_ozwpan_ep_num, tvb, offset + 1, 1, ENC_LITTLE_ENDIAN);
++    proto_tree_add_item(tree, hf_ozwpan_usb_format, tvb, offset + 2, 1, ENC_LITTLE_ENDIAN);
++    format = tvb_get_guint8(tvb, offset + 2);
 +
 +    switch (format & OZ_DATA_F_TYPE_MASK) {
 +    case OZ_DATA_F_FRAGMENTED:
-+        if (tvb_reported_length_remaining(tvb, offset + 9) < 9) return;
-+        proto_tree_add_item(tree, hf_ozwpan_app_data, tvb, offset + 9, tag_len - 9, ENC_NA);
++        if (tvb_reported_length_remaining(tvb, offset + 5) < 5) return;
++        proto_tree_add_item(tree, hf_ozwpan_app_data, tvb, offset + 5, tag_len - 5, ENC_NA);
 +        break;
 +    case OZ_DATA_F_ISOC_FIXED:
-+        if (tvb_reported_length_remaining(tvb, offset + 7) < 7) return;
-+        proto_tree_add_item(tree, hf_ozwpan_unit_size, tvb, offset + 5, 1, ENC_LITTLE_ENDIAN);
-+        proto_tree_add_item(tree, hf_ozwpan_frame_num, tvb, offset + 6, 1, ENC_LITTLE_ENDIAN);
-+        proto_tree_add_item(tree, hf_ozwpan_app_data, tvb, offset + 7, tag_len - 7, ENC_NA);
-+        break;
-+    case OZ_DATA_F_ISOC_LARGE:
-+        if (tvb_reported_length_remaining(tvb, offset + 4) < 4) return;
-+        proto_tree_add_item(tree, hf_ozwpan_app_data, tvb, offset + 4, tag_len - 4, ENC_NA);
++        if (tvb_reported_length_remaining(tvb, offset + 5) < 5) return;
++        proto_tree_add_item(tree, hf_ozwpan_unit_size, tvb, offset + 3, 1, ENC_LITTLE_ENDIAN);
++        proto_tree_add_item(tree, hf_ozwpan_frame_num, tvb, offset + 4, 1, ENC_LITTLE_ENDIAN);
++        proto_tree_add_item(tree, hf_ozwpan_app_data, tvb, offset + 5, tag_len - 5, ENC_NA);
 +        break;
 +    case OZ_DATA_F_MULTIPLE_FIXED:
-+        if (tvb_reported_length_remaining(tvb, offset + 6) < 6) return;
-+        proto_tree_add_item(tree, hf_ozwpan_unit_size, tvb, offset + 5, 1, ENC_LITTLE_ENDIAN);
-+        proto_tree_add_item(tree, hf_ozwpan_app_data, tvb, offset + 6, tag_len - 6, ENC_NA);
++        if (tvb_reported_length_remaining(tvb, offset + 4) < 4) return;
++        proto_tree_add_item(tree, hf_ozwpan_unit_size, tvb, offset + 3, 1, ENC_LITTLE_ENDIAN);
++        proto_tree_add_item(tree, hf_ozwpan_app_data, tvb, offset + 4, tag_len - 4, ENC_NA);
 +        break;
 +    case OZ_DATA_F_ISOC_VAR: /* not defined */
 +    case OZ_DATA_F_MULTIPLE_VAR: /* not defined */
++    case OZ_DATA_F_ISOC_LARGE: /* not handled here */
 +    default:
 +        break;
 +    }
@@ -424,7 +420,6 @@ index 0000000..e0fbe77
 +    guint8 app_id, type;
 +
 +    app_id = tvb_get_guint8(tvb, offset);
-+    col_add_fstr(pinfo->cinfo, COL_INFO, "USB Control");
 +    proto_tree_add_item(tree, hf_ozwpan_app_id, tvb, offset, 1, ENC_LITTLE_ENDIAN);
 +    proto_tree_add_item(tree, hf_ozwpan_seq_num, tvb, offset + 1, 1, ENC_LITTLE_ENDIAN);
 +
@@ -432,7 +427,10 @@ index 0000000..e0fbe77
 +    case OZ_APPID_USB:
 +        type = tvb_get_guint8(tvb, offset + 2);
 +        proto_tree_add_item(tree, hf_ozwpan_usb_type, tvb, offset + 2, 1, ENC_LITTLE_ENDIAN);
-+
++        
++        if (type != OZ_USB_ENDPOINT_DATA)
++            col_add_fstr(pinfo->cinfo, COL_INFO, "USB Control (%s)", try_val_to_str(type, usb_type));
++        
 +        switch (type) {
 +        case OZ_GET_DESC_REQ:
 +        case OZ_GET_DESC_RSP:
@@ -454,16 +452,22 @@ index 0000000..e0fbe77
 +        case OZ_GET_INTERFACE_RSP:
 +        case OZ_SYNCH_FRAME_REQ:
 +        case OZ_SYNCH_FRAME_RSP:
++            //col_append_lstr(pinfo->cinfo, COL_INFO, " USB Control");
 +            proto_tree_add_item(tree, hf_ozwpan_app_data, tvb, offset + 3, tag_len - 3, ENC_LITTLE_ENDIAN);
 +            break;
 +
 +        case OZ_USB_ENDPOINT_DATA:
-+            dissect_usb_endpoint_data(pinfo, tree, tvb, offset, tag_len);
++            //col_append_lstr(pinfo->cinfo, COL_INFO, " USB Data");
++            dissect_usb_endpoint_data(pinfo, tree, tvb, offset + 2, tag_len - 2);
 +            break;
 +
 +        default:
 +            break;
 +        }
++        break;
++    case OZ_APPID_SERIAL:
++        col_add_fstr(pinfo->cinfo, COL_INFO, "Serial Frame");      
++        proto_tree_add_item(tree, hf_ozwpan_app_data, tvb, offset + 3, tag_len - 3, ENC_LITTLE_ENDIAN);
 +        break;
 +    default:
 +        break;
@@ -553,8 +557,33 @@ index 0000000..e0fbe77
 +
 +    tagged_fields = proto_tree_add_item(tree, hf_ozwpan_element, tvb, start, -1, ENC_NA);
 +    proto_item_append_text(tagged_fields, " (%d bytes)",size);
-+
 +    return proto_item_add_subtree (tagged_fields, ett_ozwpan_element);
++}
++
++static const char *
++flags_to_str(guint8 control)
++{
++    static const char* flags[4] = { "ACK", "ISOC", "MORE", "RACK" };
++    const int maxlength = 32;
++
++    char *pbuf;
++    const char *buf;
++
++    int i;
++    buf = pbuf = (char *) wmem_alloc(wmem_packet_scope(), maxlength);
++    *pbuf = '\0';
++
++    for (i = 0; i < 4; i++) {
++        if (control & (0x10 << i)) {
++            if (buf[0])
++                pbuf = g_stpcpy(pbuf, ", ");
++            pbuf = g_stpcpy(pbuf, flags[i]);
++        }
++    }
++    if (buf[0] == '\0')
++        buf = "<None>";
++
++    return buf;
 +}
 +
 +static int
@@ -564,16 +593,15 @@ index 0000000..e0fbe77
 +    guint         len;
 +    guint8        control;
 +    guint8        last_paket_num;
++    const char *flags_str;
 +
-+    proto_item *ti;
-+    proto_item *hdr;
++    proto_item *ti = NULL;
 +    proto_item *hdr_control;
 +    proto_item *hdr_flag;
-+    proto_tree *ozwpan_tree;
-+    proto_tree *ozwpan_hdr_tree;
-+    proto_tree *ozwpan_control_tree;
-+    proto_tree *ozwpan_flag_tree;
-+    proto_tree *tagged_tree;
++    proto_tree *ozwpan_tree = NULL;
++    proto_tree *ozwpan_control_tree = NULL;
++    proto_tree *ozwpan_flag_tree = NULL;
++    proto_tree *tagged_tree = NULL;
 +    int         tagged_parameter_tree_len;
 +
 +    /* Check that there's enough data */
@@ -594,35 +622,40 @@ index 0000000..e0fbe77
 +    /* Make entries in Protocol column and Info column on summary display */
 +    col_set_str(pinfo->cinfo, COL_PROTOCOL, "OZWPAN");
 +    col_clear(pinfo->cinfo, COL_INFO);
-+
-+    col_add_fstr(pinfo->cinfo, COL_INFO, "Control %x", control);
++    col_set_str(pinfo->cinfo, COL_INFO, "Control Frame");
 +
 +    if (tree) {
++        flags_str = flags_to_str(control);
++        
 +        /* create display subtree for the protocol */
 +        ti = proto_tree_add_item(tree, proto_ozwpan, tvb, 0, len, ENC_NA);
-+        proto_item_append_text(ti, "Control %x", control);
-+
 +        ozwpan_tree = proto_item_add_subtree(ti, ett_ozwpan);
 +
-+        hdr = proto_tree_add_item(ozwpan_tree, hf_ozwpan_hdr, tvb, 0, 6, ENC_NA);
-+        ozwpan_hdr_tree = proto_item_add_subtree(hdr, ett_ozwpan_header);
-+
 +        /* add an item to the subtree, see section 1.6 for more information */
-+        hdr_control = proto_tree_add_uint(ozwpan_hdr_tree, hf_ozwpan_control, tvb, 0, 1, control);
-+        ozwpan_control_tree = proto_item_add_subtree(hdr_control, ett_ozwpan_header_control);
++        hdr_control = proto_tree_add_uint(ozwpan_tree, hf_ozwpan_control, tvb, 0, 1, control);
++        ozwpan_control_tree = proto_item_add_subtree(hdr_control, ett_ozwpan_control);
 +
 +        proto_tree_add_uint(ozwpan_control_tree, hf_ozwpan_version, tvb, 0, 1, control & OZ_VERSION_MASK);
 +
-+        hdr_flag = proto_tree_add_item(ozwpan_control_tree, hf_ozwpan_flag, tvb, 0, 1, ENC_NA);
-+        ozwpan_flag_tree = proto_item_add_subtree(hdr_flag, ett_ozwpan_header_control_flag);
-+        proto_tree_add_item(ozwpan_flag_tree, hf_ozwpan_flag_ack, tvb, 0, 1,ENC_NA);
-+        proto_tree_add_item(ozwpan_flag_tree, hf_ozwpan_flag_isoc, tvb, 0, 1,ENC_NA);
-+        proto_tree_add_item(ozwpan_flag_tree, hf_ozwpan_flag_more_data, tvb, 0, 1,ENC_NA);
-+        proto_tree_add_item(ozwpan_flag_tree, hf_ozwpan_flag_request_ack, tvb, 0, 1,ENC_NA);
-+        proto_tree_add_uint(ozwpan_hdr_tree, hf_ozwpan_last_pkt_num, tvb, 1, 1, last_paket_num);
-+        proto_tree_add_item(ozwpan_hdr_tree, hf_ozwpan_pkt_num, tvb, 2, 4, ENC_LITTLE_ENDIAN);
++        hdr_flag = proto_tree_add_uint_format(ozwpan_control_tree, hf_ozwpan_flags, tvb, 0, 1, control, "Flags: 0x%1x (%s)", control & OZ_F_MASK, flags_str);
++        ozwpan_flag_tree = proto_item_add_subtree(hdr_flag, ett_ozwpan_control_flag);
++        proto_tree_add_item(ozwpan_flag_tree, hf_ozwpan_flags_ack, tvb, 0, 1,ENC_NA);
++        proto_tree_add_item(ozwpan_flag_tree, hf_ozwpan_flags_isoc, tvb, 0, 1,ENC_NA);
++        proto_tree_add_item(ozwpan_flag_tree, hf_ozwpan_flags_more_data, tvb, 0, 1,ENC_NA);
++        proto_tree_add_item(ozwpan_flag_tree, hf_ozwpan_flags_request_ack, tvb, 0, 1,ENC_NA);
++        proto_tree_add_uint(ozwpan_tree, hf_ozwpan_last_pkt_num, tvb, 1, 1, last_paket_num);
++        proto_tree_add_item(ozwpan_tree, hf_ozwpan_pkt_num, tvb, 2, 4, ENC_LITTLE_ENDIAN);
++    }
 +
-+        if (len > 6) {
++    if (len > 6) {
++       if (control & OZ_F_ISOC) {
++           col_set_str(pinfo->cinfo, COL_INFO, "Large ISOC Frame");
++           proto_tree_add_item(tree, hf_ozwpan_ep_num, tvb, 6, 1, ENC_LITTLE_ENDIAN);
++           proto_tree_add_item(tree, hf_ozwpan_usb_format, tvb, 7, 1, ENC_LITTLE_ENDIAN);
++           proto_tree_add_item(tree, hf_ozwpan_ms_data, tvb, 8, 1, ENC_LITTLE_ENDIAN);               
++           proto_tree_add_item(tree, hf_ozwpan_frame_num, tvb, 9, 1, ENC_LITTLE_ENDIAN);
++           proto_tree_add_item(tree, hf_ozwpan_app_data, tvb, 10, -1, ENC_LITTLE_ENDIAN);
++        } else {
 +            tagged_parameter_tree_len = tvb_reported_length_remaining(tvb, 6);
 +            tagged_tree = get_tagged_parameter_tree (ozwpan_tree, tvb, 6, tagged_parameter_tree_len);
 +            ozwpan_add_tagged_element(tvb, 6, pinfo, tagged_tree, tagged_parameter_tree_len);
@@ -639,203 +672,195 @@ index 0000000..e0fbe77
 +{
 +    /* Setup list of header fields  See Section 1.6.1 for details*/
 +    static hf_register_info hf[] = {
-+        {   &hf_ozwpan_hdr,
-+            {   "hdr", "oz.hdr",
-+                FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL
-+            }
-+        },
 +        {   &hf_ozwpan_control,
-+            {   "control", "oz.hdr.control",
++            {   "Control", "ozwpan.control",
 +                FT_UINT8, BASE_HEX, NULL, 0, NULL, HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_version,
-+            {   "Version", "oz.hdr.control.version",
-+                FT_UINT8, BASE_DEC, NULL, 0x0c, "Version", HFILL
++            {   "Protocol Version", "ozwpan.version",
++                FT_UINT8, BASE_DEC, NULL, 0x0c, NULL, HFILL
 +            }
 +        },
-+
-+        {   &hf_ozwpan_flag,
-+            {   "Flag", "oz.hdr.control.flag",
-+                FT_UINT8, BASE_DEC, VALS(frame_type), 0xf0, "Flag", HFILL
++        {   &hf_ozwpan_flags,
++            {   "Flags", "ozwpan.flags",
++                FT_UINT8, BASE_HEX, NULL, 0xf0, "Flags (4 Bits)", HFILL
 +            }
 +        },
-+        {   &hf_ozwpan_flag_ack,
-+            {   "ACK", "oz.hdr.control.flag.ack",
++        {   &hf_ozwpan_flags_ack,
++            {   "ACK", "ozwpan.flags.ack",
 +                FT_BOOLEAN, 8, NULL, OZ_F_ACK, NULL, HFILL
 +            }
 +        },
-+        {   &hf_ozwpan_flag_isoc,
-+            {   "ISOC", "oz.hdr.control.flag.isoc",
++        {   &hf_ozwpan_flags_isoc,
++            {   "ISOC", "ozwpan.flags.isoc",
 +                FT_BOOLEAN, 8, NULL, OZ_F_ISOC, NULL, HFILL
 +            }
 +        },
-+        {   &hf_ozwpan_flag_more_data,
-+            {   "More Data", "oz.hdr.control.flag.more",
++        {   &hf_ozwpan_flags_more_data,
++            {   "MORE DATA", "ozwpan.flags.more_data",
 +                FT_BOOLEAN, 8, NULL, OZ_F_MORE_DATA, NULL, HFILL
 +            }
 +        },
-+        {   &hf_ozwpan_flag_request_ack,
-+            {   "REQUEST ACK", "oz.hdr.control.flag.rack",
++        {   &hf_ozwpan_flags_request_ack,
++            {   "REQUEST ACK", "ozwpan.flag.rack",
 +                FT_BOOLEAN, 8, NULL, OZ_F_ACK_REQUESTED, NULL, HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_last_pkt_num,
-+            {   "last packet number", "oz.last_paket_num",
++            {   "last packet number", "ozwpan.last_paket_num",
 +                FT_UINT8, BASE_DEC, NULL, 0, NULL, HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_pkt_num,
-+            {   "packet number", "oz.packet_number",
++            {   "packet number", "ozwpan.packet_number",
 +                FT_UINT32, BASE_DEC, NULL, 0, NULL, HFILL
 +            }
 +        },
-+
++        {   &hf_ozwpan_ms_data,
++            {   "ms data", "ozwpan.ms_data",
++                FT_UINT8, BASE_DEC, NULL, 0, NULL, HFILL
++            }
++        },
 +        {   &hf_ozwpan_element,
-+            {   "Element Data", "oz.element",
++            {   "Element Data", "ozwpan.element",
 +                FT_BYTES, BASE_NONE, NULL, 0,
 +                "Data interpretation of Element", HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_element_length,
-+            {   "Element Length", "oz.element.length",
++            {   "Element Length", "ozwpan.element.length",
 +                FT_UINT8, BASE_DEC, NULL, 0,
 +                "Length of Element", HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_element_type,
-+            {   "Element Type", "oz.element.type",
++            {   "Element Type", "ozwpan.element.type",
 +                FT_UINT8, BASE_DEC|BASE_EXT_STRING, &element_type_ext, 0,
 +                "Element Type", HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_element_data,
-+            {   "Element Data", "oz.element.data",
++            {   "Element Data", "ozwpan.element.data",
 +                FT_BYTES, BASE_NONE, NULL, 0,
 +                "Element Data", HFILL
 +            }
 +        },
 +
 +        {   &hf_ozwpan_mode,
-+            {   "Connection Mode", "oz.mode",
++            {   "Connection Mode", "ozwpan.mode",
 +                FT_UINT8, BASE_DEC, VALS(connect_mode), OZ_MODE_MASK, "Connection Mode", HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_status,
-+            {   "Status Code", "oz.status",
++            {   "Status Code", "ozwpan.status",
 +                FT_UINT8, BASE_DEC|BASE_EXT_STRING, &status_code_ext, 0, "Status Code", HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_pd_info,
-+            {   "PD Info", "oz.pd_info",
++            {   "PD Info", "ozwpan.pd_info",
 +                FT_UINT8, BASE_DEC, NULL, 0, NULL, HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_session_id,
-+            {   "Session ID", "oz.session_id",
++            {   "Session ID", "ozwpan.session_id",
 +                FT_UINT8, BASE_DEC, NULL, 0, NULL, HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_presleep,
-+            {   "Presleep", "oz.presleep",
++            {   "Presleep", "ozwpan.presleep",
 +                FT_UINT8, BASE_DEC, NULL, 0, NULL, HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_ms_isoc_latency,
-+            {   "ISOC Latency", "oz.ms_isoc_latency",
++            {   "ISOC Latency", "ozwpan.ms_isoc_latency",
 +                FT_UINT8, BASE_DEC, NULL, 0, NULL, HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_host_vendor,
-+            {   "host vendor", "oz.host_vendor",
++            {   "host vendor", "ozwpan.host_vendor",
 +                FT_UINT8, BASE_HEX, NULL, 0, NULL, HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_keep_alive,
-+            {   "keep alive", "oz.keep_alive",
++            {   "keep alive", "ozwpan.keep_alive",
 +                FT_UINT8, BASE_DEC, NULL, 0, NULL, HFILL
 +            }
 +        },
 +
 +        {   &hf_ozwpan_apps,
-+            {   "Supported Apps", "oz.apps",
++            {   "Supported Apps", "ozwpan.apps",
 +                FT_UINT16, BASE_HEX, NULL, 0, NULL, HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_max_len_div16,
-+            {   "Max length in 16 Bytes Units", "oz.max_len_div16",
++            {   "Max length in 16 Bytes Units", "ozwpan.max_len_div16",
 +                FT_UINT8, BASE_DEC, NULL, 0, NULL, HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_ms_per_isoc,
-+            {   "Ms per ISOC", "oz.ms_per_isoc",
++            {   "Ms per ISOC", "ozwpan.ms_per_isoc",
 +                FT_UINT8, BASE_DEC, NULL, 0, NULL, HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_ep_num,
-+            {   "Endpoint Number", "oz.ep_num",
++            {   "Endpoint Number", "ozwpan.ep_num",
 +                FT_UINT8, BASE_HEX, NULL, 0, NULL, HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_index,
-+            {   "Index", "oz.index",
++            {   "Index", "ozwpan.index",
 +                FT_UINT8, BASE_HEX, NULL, 0, NULL, HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_report,
-+            {   "Report", "oz.report",
++            {   "Report", "ozwpan.report",
 +                FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_app_id,
-+            {   "Application ID", "oz.app_id",
++            {   "Application ID", "ozwpan.app_id",
 +                FT_UINT8, BASE_DEC, VALS(apps_type), 0, NULL, HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_seq_num,
-+            {   "Sequence Number", "oz.seq_num",
++            {   "Sequence Number", "ozwpan.seq_num",
 +                FT_UINT8, BASE_HEX, NULL, 0, NULL, HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_usb_type,
-+            {   "USB Type", "oz.usb_type",
++            {   "USB Type", "ozwpan.usb_type",
 +                FT_UINT8, BASE_DEC|BASE_EXT_STRING, &usb_type_ext, 0,
 +                "USB Frame Type", HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_usb_format,
-+            {   "USB Format", "oz.usb_format",
++            {   "USB Format", "ozwpan.usb_format",
 +                FT_UINT8, BASE_DEC|BASE_EXT_STRING, &usb_format_type_ext, 0,
 +                "USB Format", HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_app_data,
-+            {   "Applicantion Data", "oz.data",
++            {   "Applicantion Data", "ozwpan.data",
 +                FT_BYTES, BASE_NONE, NULL, 0, "Frame Data", HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_unit_size,
-+            {   "Unit size", "oz.unit_size",
++            {   "Unit size", "ozwpan.unit_size",
 +                FT_UINT8, BASE_DEC, NULL, 0, NULL, HFILL
 +            }
 +        },
 +        {   &hf_ozwpan_frame_num,
-+            {   "Frame number", "oz.frame_number",
++            {   "Frame number", "ozwpan.frame_number",
 +                FT_UINT8, BASE_DEC, NULL, 0, NULL, HFILL
 +            }
 +        },
-+        /*
-+                  { &hf_ozwpan_req_id,
-+                    { "Request ID", "oz.req_id",
-+                    FT_UINT8, BASE_DEC, NULL, 0, NULL, HFILL }},
-+        */
 +    };
 +
 +    static gint *ett[] = {
 +        &ett_ozwpan,
-+        &ett_ozwpan_header,
-+        &ett_ozwpan_header_control,
-+        &ett_ozwpan_header_control_flag,
++        &ett_ozwpan_control,
++        &ett_ozwpan_control_flag,
 +        &ett_ozwpan_element,
 +    };
 +
@@ -845,7 +870,7 @@ index 0000000..e0fbe77
 +    };
 +
 +    expert_module_t *expert_ozwpan;
-+    proto_ozwpan = proto_register_protocol("Ozmo Wireless Personal Area Network", "OZWPAN", "oz");
++    proto_ozwpan = proto_register_protocol("Ozmo Wireless Personal Area Network", "OZWPAN", "ozwpan");
 +    expert_ozwpan = expert_register_protocol(proto_ozwpan);
 +    expert_register_field_array(expert_ozwpan, ei, array_length(ei));
 +    proto_register_field_array(proto_ozwpan, hf, array_length(hf));
@@ -873,6 +898,7 @@ index 0000000..e0fbe77
 + * ex: set shiftwidth=2 tabstop=8 expandtab:
 + * :indentSize=2:tabSize=8:noTabs=true:
 + */
+\ No newline at end of file
 diff --git a/epan/etypes.h b/epan/etypes.h
 index 5af30e5..c827513 100644
 --- a/epan/etypes.h
