@@ -1,0 +1,969 @@
+From 5bf2807175eb08b5760f670912db398e76e92a01 Mon Sep 17 00:00:00 2001
+From: Christian Lamparter <chunkeey@googlemail.com>
+Date: Sun, 31 Jan 2016 03:07:45 +0100
+Subject: [PATCH] Experimental usbip dissector
+
+---
+ epan/CMakeLists.txt             |   1 +
+ epan/dissectors/Makefile.common |   1 +
+ epan/dissectors/packet-usb.c    |  36 ++
+ epan/dissectors/packet-usb.h    |   3 +-
+ epan/dissectors/packet-usbip.c  | 727 ++++++++++++++++++++++++++++++++++++++++
+ epan/dissectors/packet-usbip.h  |  77 +++++
+ 6 files changed, 844 insertions(+), 1 deletion(-)
+ create mode 100644 epan/dissectors/packet-usbip.c
+ create mode 100644 epan/dissectors/packet-usbip.h
+
+diff --git a/epan/CMakeLists.txt b/epan/CMakeLists.txt
+index 2185737..7432d76 100644
+--- a/epan/CMakeLists.txt
++++ b/epan/CMakeLists.txt
+@@ -1383,6 +1383,7 @@ set(DISSECTOR_SRC
+ 	dissectors/packet-usb-masstorage.c
+ 	dissectors/packet-usb-video.c
+ 	dissectors/packet-usb.c
++	dissectors/packet-usbip.c
+ 	dissectors/packet-user_encap.c
+ 	dissectors/packet-uts.c
+ 	dissectors/packet-v120.c
+diff --git a/epan/dissectors/Makefile.common b/epan/dissectors/Makefile.common
+index b1d09fc..5f47c39 100644
+--- a/epan/dissectors/Makefile.common
++++ b/epan/dissectors/Makefile.common
+@@ -1300,6 +1300,7 @@ DISSECTOR_SRC = \
+ 	packet-usb-masstorage.c	\
+ 	packet-usb-video.c	\
+ 	packet-usb.c		\
++	packet-usbip.c		\
+ 	packet-user_encap.c	\
+ 	packet-uts.c		\
+ 	packet-v120.c		\
+diff --git a/epan/dissectors/packet-usb.c b/epan/dissectors/packet-usb.c
+index 52668c5..fa388cc 100644
+--- a/epan/dissectors/packet-usb.c
++++ b/epan/dissectors/packet-usb.c
+@@ -39,6 +39,7 @@
+ 
+ #include "packet-usb.h"
+ #include "packet-mausb.h"
++#include "packet-usbip.h"
+ 
+ /* protocols and header fields */
+ static int proto_usb = -1;
+@@ -3648,6 +3649,13 @@ dissect_usb_common(tvbuff_t *tvb, packet_info *pinfo, proto_tree *parent,
+         bus_id = mausb_ep_handle_bus_num(ma_header->handle);
+         break;
+ 
++    case USB_HEADER_USBIP:
++	urb_type = tvb_get_ntohl(tvb, 0) == 1 ? URB_SUBMIT : URB_COMPLETE;
++	device_address = 0; // tvb_get_guint8(tvb, 11);
++	bus_id = 0; // tvb_get_guint8(tvb, 9);
++	endpoint = tvb_get_ntohl(tvb, 0x10) & 0xf;
++	break;
++
+     default:
+         return; /* invalid USB pseudo header */
+     }
+@@ -3686,6 +3694,16 @@ dissect_usb_common(tvbuff_t *tvb, packet_info *pinfo, proto_tree *parent,
+         usb_id = 0;
+         break;
+ 
++    case USB_HEADER_USBIP:
++        usb_conv_info->transfer_type = endpoint == 0 ? URB_CONTROL : URB_UNKNOWN;
++        usb_conv_info->direction = tvb_get_ntohl(tvb, 0xc) == USBIP_DIR_OUT ? P2P_DIR_SENT : P2P_DIR_RECV; // : P2P_DIR_RECV;
++        usb_conv_info->is_setup = tvb_get_ntoh64(tvb, 0x28) != 0x0ull;
++        usb_conv_info->is_request = (urb_type==URB_SUBMIT);
++
++	offset = usb_conv_info->is_setup ? 0x28 : 0x30;
++        usb_id = 0;
++	break;
++
+     default:
+         usb_id = 0;
+         break;
+@@ -3720,6 +3738,9 @@ dissect_usb_common(tvbuff_t *tvb, packet_info *pinfo, proto_tree *parent,
+ 
+         case USB_HEADER_MAUSB:
+             break;
++
++        case USB_HEADER_USBIP:
++            break;
+         }
+         break;
+ 
+@@ -3755,6 +3776,10 @@ dissect_usb_common(tvbuff_t *tvb, packet_info *pinfo, proto_tree *parent,
+ 
+                 case USB_HEADER_MAUSB:
+                     break;
++
++                case USB_HEADER_USBIP:
++                    break;
++
+                 }
+             }
+         } else {
+@@ -3786,6 +3811,10 @@ dissect_usb_common(tvbuff_t *tvb, packet_info *pinfo, proto_tree *parent,
+ 
+             case USB_HEADER_MAUSB:
+                 break;
++
++            case USB_HEADER_USBIP:
++                break;
++
+             }
+ 
+             offset = dissect_usb_setup_response(pinfo, tree, tvb, offset,
+@@ -3808,6 +3837,10 @@ dissect_usb_common(tvbuff_t *tvb, packet_info *pinfo, proto_tree *parent,
+ 
+         case USB_HEADER_MAUSB:
+             break;
++
++        case USB_HEADER_USBIP:
++            break;
++
+         }
+         break;
+ 
+@@ -3828,6 +3861,9 @@ dissect_usb_common(tvbuff_t *tvb, packet_info *pinfo, proto_tree *parent,
+ 
+         case USB_HEADER_MAUSB:
+             break;
++
++	case USB_HEADER_USBIP:
++            break;
+         }
+         break;
+     }
+diff --git a/epan/dissectors/packet-usb.h b/epan/dissectors/packet-usb.h
+index 0dfd3f2..a221eb0 100644
+--- a/epan/dissectors/packet-usb.h
++++ b/epan/dissectors/packet-usb.h
+@@ -46,7 +46,8 @@ typedef enum {
+     USB_HEADER_LINUX_48_BYTES,
+     USB_HEADER_LINUX_64_BYTES,
+     USB_HEADER_USBPCAP,
+-    USB_HEADER_MAUSB
++    USB_HEADER_MAUSB,
++    USB_HEADER_USBIP
+ } usb_header_t;
+ 
+ #define USB_HEADER_IS_LINUX(type) \
+diff --git a/epan/dissectors/packet-usbip.c b/epan/dissectors/packet-usbip.c
+new file mode 100644
+index 0000000..4b79888
+--- /dev/null
++++ b/epan/dissectors/packet-usbip.c
+@@ -0,0 +1,727 @@
++/* packet-usbip.c
++ * Routines for USB/IP dissection
++ * Copyright 2016, Christian Lamparter <chunkeey@googlemail.com>
++ *
++ * Wireshark - Network traffic analyzer
++ * By Gerald Combs <gerald@wireshark.org>
++ * Copyright 1998 Gerald Combs
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
++ */
++
++/*
++ * The USB/IP protocol follows a server/client architecture. The server exports the
++ * USB devices and the clients imports them. The device driver for the exported
++ * USB device runs on the client machine.
++ */
++
++#include <config.h>
++
++#include <epan/packet.h>
++#include <epan/expert.h>
++#include <epan/prefs.h>    /* Include only as needed */
++#include <epan/etypes.h>
++
++#include "packet-usbip.h"
++#include "packet-usb.h"
++
++void proto_register_usbip(void);
++void proto_reg_handoff_usbip(void);
++
++/* Initialize the protocol and registered fields */
++static int proto_usbip = -1;
++
++static int hf_usbip_version = -1;
++static int hf_usbip_operation = -1;
++static int hf_usbip_command = -1;
++static int hf_usbip_status = -1;
++static int hf_usbip_number_devices = -1;
++static int hf_usbip_path = -1;
++static int hf_usbip_devid = -1;
++static int hf_usbip_busid = -1;
++static int hf_usbip_busnum = -1;
++static int hf_usbip_devnum = -1;
++static int hf_usbip_speed = -1;
++static int hf_usbip_idVendor = -1;
++static int hf_usbip_idProduct = -1;
++static int hf_usbip_bcdDevice = -1;
++static int hf_usbip_bDeviceClass = -1;
++static int hf_usbip_bDeviceSubClass = -1;
++static int hf_usbip_bDeviceProtocol = -1;
++static int hf_usbip_bConfigurationValue = -1;
++static int hf_usbip_bNumConfigurations = -1;
++static int hf_usbip_bNumInterfaces = -1;
++static int hf_usbip_bInterfaceClass = -1;
++static int hf_usbip_bInterfaceSubClass = -1;
++static int hf_usbip_bInterfaceProtocol = -1;
++
++static int hf_usbip_device = -1;
++static int hf_usbip_interface = -1;
++static int hf_usbip_interval = -1;
++
++static int hf_usbip_actual_length = -1;
++static int hf_usbip_error_count = -1;
++
++static int hf_usbip_seqnum = -1;
++static int hf_usbip_direction = -1;
++static int hf_usbip_ep = -1;
++static int hf_usbip_transfer_flags = -1;
++static int hf_usbip_transfer_buffer_length = -1;
++static int hf_usbip_start_frame = -1;
++static int hf_usbip_number_of_packets = -1;
++static int hf_usbip_setup = -1;
++static int hf_usbip_urb_data = -1;
++
++static dissector_handle_t data_handle;
++
++static const value_string usb_class_vals[] = {
++    {IF_CLASS_DEVICE,                   "Device"},
++    {IF_CLASS_AUDIO,                    "Audio"},
++    {IF_CLASS_COMMUNICATIONS,           "Communications and CDC Control"},
++    {IF_CLASS_HID,                      "HID"},
++    {IF_CLASS_PHYSICAL,                 "Physical"},
++    {IF_CLASS_IMAGE,                    "Imaging"},
++    {IF_CLASS_PRINTER,                  "Printer"},
++    {IF_CLASS_MASS_STORAGE,             "Mass Storage"},
++    {IF_CLASS_HUB,                      "Hub"},
++    {IF_CLASS_CDC_DATA,                 "CDC-Data"},
++    {IF_CLASS_SMART_CARD,               "Smart Card"},
++    {IF_CLASS_CONTENT_SECURITY,         "Content Security"},
++    {IF_CLASS_VIDEO,                    "Video"},
++    {IF_CLASS_PERSONAL_HEALTHCARE,      "Personal Healthcare"},
++    {IF_CLASS_AUDIO_VIDEO,              "Audio/Video Devices"},
++    {IF_CLASS_DIAGNOSTIC_DEVICE,        "Diagnostic Device"},
++    {IF_CLASS_WIRELESS_CONTROLLER,      "Wireless Controller"},
++    {IF_CLASS_MISCELLANEOUS,            "Miscellaneous"},
++    {IF_CLASS_APPLICATION_SPECIFIC,     "Application Specific"},
++    {IF_CLASS_VENDOR_SPECIFIC,          "Vendor Specific"},
++    {0, NULL}
++};
++static value_string_ext usb_class_vals_ext = VALUE_STRING_EXT_INIT(usb_class_vals);
++
++static value_string usbip_operation_vals[] = {
++    {OP_REP_IMPORT,                     "OP_REP_IMPORT"},
++    {OP_REP_DEVLIST,                    "OP_REP_DEVLIST"},
++    {OP_REP_EXPORT,                     "OP_REP_EXPORT"},
++    {OP_REP_UNEXPORT,                   "OP_REP_UNEXPORT"},
++
++    {OP_REQ_IMPORT,                     "OP_REQ_IMPORT"},
++    {OP_REQ_DEVLIST,                    "OP_REQ_DEVLIST"},
++    {OP_REQ_EXPORT,                     "OP_REQ_EXPORT"},
++    {OP_REQ_UNEXPORT,                   "OP_REQ_UNEXPORT"},
++    {0, NULL}
++};
++
++static value_string usbip_command_vals[] = {
++    {OP_CMD_SUBMIT,                     "OP_CMD_SUBMIT"},
++    {OP_CMD_UNLINK,                     "OP_CMD_UNLINK"},
++    {OP_RET_SUBMIT,                     "OP_RET_SUBMIT"},
++    {OP_RET_UNLINK,                     "OP_RET_UNLINK"},
++    {0, NULL}
++};
++
++static value_string_ext usbip_command_vals_ext = VALUE_STRING_EXT_INIT(usbip_command_vals);
++static value_string_ext usbip_operation_vals_ext = VALUE_STRING_EXT_INIT(usbip_operation_vals);
++
++/*
++static const value_string usb_protocols[] = {
++    {0x000000,    "Use class code info from Interface Descriptors"},
++    {0x060101,    "Still Imaging"},
++    {0x090000,    "Full speed Hub"},
++    {0x090001,    "Hi-speed hub with single TT"},
++    {0x090002,    "Hi-speed hub with multiple TTs"},
++    {0x0D0000,    "Content Security"},
++    {0x100100,    "AVControl Interface"},
++    {0x100200,    "AVData Video Streaming Interface"},
++    {0x100300,    "AVData Audio Streaming Interface"},
++    {0xDC0101,    "USB2 Compliance Device"},
++    {0xE00101,    "Bluetooth Programming Interface"},
++    {0xE00102,    "UWB Radio Control Interface"},
++    {0xE00103,    "Remote NDIS"},
++    {0xE00104,    "Bluetooth AMP Controller"},
++    {0xE00201,    "Host Wire Adapter Control/Data interface"},
++    {0xE00202,    "Device Wire Adapter Control/Data interface"},
++    {0xE00203,    "Device Wire Adapter Isochronous interface"},
++    {0xEF0101,    "Active Sync device"},
++    {0xEF0102,    "Palm Sync"},
++    {0xEF0201,    "Interface Association Descriptor"},
++    {0xEF0202,    "Wire Adapter Multifunction Peripheral programming interface"},
++    {0xEF0301,    "Cable Based Association Framework"},
++    {0xFE0101,    "Device Firmware Upgrade"},
++    {0xFE0200,    "IRDA Bridge device"},
++    {0xFE0300,    "USB Test and Measurement Device"},
++    {0xFE0301,    "USB Test and Measurement Device conforming to the USBTMC USB488"},
++    {0, NULL}
++};
++static value_string_ext usb_protocols_ext = VALUE_STRING_EXT_INIT(usb_protocols);
++*/
++
++static const value_string usb_endpoint_direction_vals[] = {
++    {USBIP_DIR_OUT, "OUT" },
++    {USBIP_DIR_IN, "IN" },
++    {0, NULL}
++};
++
++/* Initialize the subtree pointers */
++static gint ett_usbip = -1;
++static gint ett_usbip_dev = -1;
++static gint ett_usbip_transfer_flag = -1;
++static gint ett_usbip_intf = -1;
++
++static expert_field ei_usbip = EI_INIT;
++
++static size_t
++dissect_device_list_request(packet_info *pinfo) {
++    col_set_str(pinfo->cinfo, COL_INFO, "Device List Request");
++    return 0;
++}
++
++static void dissect_device(proto_tree *tree, tvbuff_t *tvb, int offset) {
++    if (tvb_reported_length_remaining(tvb, offset) < 0x11c) {
++        return;
++    }
++
++    proto_tree_add_item(tree, hf_usbip_path, tvb, offset, 0x100, ENC_NA);
++    proto_tree_add_item(tree, hf_usbip_busid, tvb, offset + 0x100, 32, ENC_NA);
++    proto_tree_add_item(tree, hf_usbip_busnum, tvb, offset + 0x104, 4, ENC_BIG_ENDIAN);
++    proto_tree_add_item(tree, hf_usbip_devnum, tvb, offset + 0x108, 4, ENC_BIG_ENDIAN);
++    proto_tree_add_item(tree, hf_usbip_speed, tvb, offset + 0x10c, 4, ENC_BIG_ENDIAN);
++    proto_tree_add_item(tree, hf_usbip_idVendor, tvb, offset + 0x110, 2, ENC_BIG_ENDIAN);
++    proto_tree_add_item(tree, hf_usbip_idProduct, tvb, offset + 0x112, 2, ENC_BIG_ENDIAN);
++    proto_tree_add_item(tree, hf_usbip_bcdDevice, tvb, offset + 0x114, 2, ENC_BIG_ENDIAN);
++    proto_tree_add_item(tree, hf_usbip_bDeviceClass, tvb, offset + 0x116, 1, ENC_BIG_ENDIAN);
++    proto_tree_add_item(tree, hf_usbip_bDeviceSubClass, tvb, offset + 0x117, 1, ENC_BIG_ENDIAN);
++    proto_tree_add_item(tree, hf_usbip_bDeviceProtocol, tvb, offset + 0x118, 1, ENC_BIG_ENDIAN);
++    proto_tree_add_item(tree, hf_usbip_bConfigurationValue, tvb, offset + 0x119, 1, ENC_BIG_ENDIAN);
++    proto_tree_add_item(tree, hf_usbip_bNumConfigurations, tvb, offset + 0x11a, 1, ENC_BIG_ENDIAN);
++    proto_tree_add_item(tree, hf_usbip_bNumInterfaces, tvb, offset + 0x11b, 1, ENC_BIG_ENDIAN);
++}
++
++static size_t
++dissect_device_list_response(packet_info *pinfo, proto_tree *tree, tvbuff_t *tvb, int offset) {
++    guint32 num_of_devs, i;
++    guint8 num_of_intf, j;
++    
++    proto_item *ti_intf;
++    proto_tree *intf_tree = NULL;
++
++    proto_item *ti_dev;
++    proto_tree *dev_tree = NULL;
++
++    col_set_str(pinfo->cinfo, COL_INFO, "Device List Response");
++
++    if (tvb_reported_length_remaining(tvb, offset) < 4) {
++        return offset;
++    }
++
++    proto_tree_add_item(tree, hf_usbip_number_devices, tvb, offset, 1, ENC_BIG_ENDIAN);
++    num_of_devs = tvb_get_ntohl(tvb, offset);
++
++    offset += 4;
++
++    num_of_intf = tvb_get_guint8(tvb, offset + 0x11b);
++
++    for (i = 0; i < num_of_devs; i++) {
++        ti_dev = proto_tree_add_uint(tree, hf_usbip_device, tvb, offset, 0x138 + 4 * num_of_intf, i);
++        dev_tree = proto_item_add_subtree(ti_dev, ett_usbip_dev);
++        dissect_device(dev_tree, tvb, offset);
++
++        offset += 0x11b;
++
++        for (j = 0; j < num_of_intf; j++) {
++            ti_intf = proto_tree_add_uint(dev_tree, hf_usbip_interface, tvb, offset, 4, j);
++            intf_tree = proto_item_add_subtree(ti_intf, ett_usbip_intf);
++
++            proto_tree_add_item(intf_tree, hf_usbip_bInterfaceClass, tvb, offset, 1, ENC_BIG_ENDIAN);
++            proto_tree_add_item(intf_tree, hf_usbip_bInterfaceSubClass, tvb, offset + 1, 1, ENC_BIG_ENDIAN);
++            proto_tree_add_item(intf_tree, hf_usbip_bInterfaceProtocol, tvb, offset + 2, 1, ENC_BIG_ENDIAN);
++
++            offset += 4;
++        }
++    }
++    
++    return offset;
++}
++
++static size_t
++dissect_import_request(packet_info *pinfo, proto_tree *tree, tvbuff_t *tvb, int offset) {
++    col_set_str(pinfo->cinfo, COL_INFO, "Import Request");
++
++    proto_tree_add_item(tree, hf_usbip_busid, tvb, offset, 32, ENC_NA);
++    return 32;
++    
++}
++
++static size_t
++dissect_import_response(packet_info *pinfo, proto_tree *tree, tvbuff_t *tvb, int offset) {
++    col_set_str(pinfo->cinfo, COL_INFO, "Import Response");
++    dissect_device(tree, tvb, offset);
++    return 0x136;
++}
++
++static size_t
++dissect_export_request(packet_info *pinfo, proto_tree *tree, tvbuff_t *tvb, int offset) {
++    col_set_str(pinfo->cinfo, COL_INFO, "Export Request");
++
++    proto_tree_add_item(tree, hf_usbip_busid, tvb, offset, 32, ENC_NA);
++    return 0;
++}
++
++static size_t
++dissect_export_response(packet_info *pinfo, proto_tree *tree, tvbuff_t *tvb, int offset) {
++    col_set_str(pinfo->cinfo, COL_INFO, "Export Response");
++    dissect_device(tree, tvb, offset);
++    return 0;
++}
++
++static size_t
++dissect_unexport_request(packet_info *pinfo, proto_tree *tree, tvbuff_t *tvb, int offset) {
++    col_set_str(pinfo->cinfo, COL_INFO, "Unexport Request");
++
++    proto_tree_add_item(tree, hf_usbip_busid, tvb, offset, 32, ENC_NA);
++    return 0;
++}
++
++static size_t
++dissect_unexport_response(packet_info *pinfo, proto_tree *tree, tvbuff_t *tvb, int offset) {
++    col_set_str(pinfo->cinfo, COL_INFO, "Unexport Response");
++    dissect_device(tree, tvb, offset);
++    return 0;
++}
++
++static size_t
++dissect_cmd_submit(packet_info *pinfo, proto_tree *tree, tvbuff_t *tvb, int offset) {
++    //proto_item *ti = NULL;
++    // proto_tree *transfer_flag_tree = NULL;
++
++    col_set_str(pinfo->cinfo, COL_INFO, "Submit Command");
++
++    //ti =
++    proto_tree_add_item(tree, hf_usbip_transfer_flags, tvb, offset, 4, ENC_BIG_ENDIAN);
++    offset += 4;
++    // transfer_flag_tree = proto_item_add_subtree(ti, ett_usbip_transfer_flag)
++
++    proto_tree_add_item(tree, hf_usbip_transfer_buffer_length, tvb, offset, 4, ENC_BIG_ENDIAN);
++    offset += 4;
++
++    proto_tree_add_item(tree, hf_usbip_start_frame, tvb, offset, 4, ENC_BIG_ENDIAN);
++    offset += 4;
++
++    proto_tree_add_item(tree, hf_usbip_number_of_packets, tvb, offset, 4, ENC_BIG_ENDIAN);
++    offset += 4;
++
++    proto_tree_add_item(tree, hf_usbip_interval, tvb, offset, 4, ENC_BIG_ENDIAN);
++    offset += 4;
++
++    proto_tree_add_item(tree, hf_usbip_setup, tvb, offset, 8, ENC_NA);
++    offset += 8;
++
++    return offset;
++}
++
++static size_t
++dissect_ret_submit(packet_info *pinfo, proto_tree *tree, tvbuff_t *tvb, int offset) {
++    col_set_str(pinfo->cinfo, COL_INFO, "Submit Response");
++
++    proto_tree_add_item(tree, hf_usbip_status, tvb, offset, 4, ENC_BIG_ENDIAN);
++    offset += 4;
++
++    proto_tree_add_item(tree, hf_usbip_actual_length, tvb, offset, 4, ENC_BIG_ENDIAN);
++    offset += 4;
++
++    proto_tree_add_item(tree, hf_usbip_start_frame, tvb, offset, 4, ENC_BIG_ENDIAN);
++    offset += 4;
++
++    proto_tree_add_item(tree, hf_usbip_number_of_packets, tvb, offset, 4, ENC_BIG_ENDIAN);
++    offset += 4;
++
++    proto_tree_add_item(tree, hf_usbip_error_count, tvb, offset, 4, ENC_BIG_ENDIAN);
++    offset += 4;
++
++    proto_tree_add_item(tree, hf_usbip_setup, tvb, offset, 8, ENC_NA);
++    offset += 8;
++
++    return offset;
++}
++
++static size_t
++dissect_cmd_unlink(packet_info *pinfo, int offset) {
++    col_set_str(pinfo->cinfo, COL_INFO, "Unlink Command");
++    offset += 0x1c;
++
++    return offset;
++}
++
++static size_t
++dissect_ret_unlink(packet_info *pinfo, proto_tree *tree, tvbuff_t *tvb, int offset) {
++    col_set_str(pinfo->cinfo, COL_INFO, "Unlink Response");
++
++    proto_tree_add_item(tree, hf_usbip_status, tvb, offset, 4, ENC_BIG_ENDIAN);
++    offset += 4;
++
++    proto_tree_add_item(tree, hf_usbip_urb_data, tvb, offset + 0x18, -1, ENC_NA);
++    offset += 0x18;
++    return offset;
++}
++
++static int
++dissect_usbip(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data _U_)
++
++{
++    guint         len;
++    guint16       version;
++    size_t        offset = 0;
++
++    proto_item *ti = NULL;
++    proto_tree *usbip_tree = NULL;
++
++    /* Check that there's enough data */
++    len = tvb_reported_length(tvb);
++    if ( len < 8 )    /* usbip's smallest packet size is 8 */
++        return (0);
++
++    /* Make entries in Protocol column and Info column on summary display */
++    col_set_str(pinfo->cinfo, COL_PROTOCOL, "USBIP");
++    col_clear(pinfo->cinfo, COL_INFO);
++
++    /* Get some values from the packet header */
++    version = tvb_get_ntohs(tvb, 0);
++
++    if (tree) {
++        /* create display subtree for the protocol */
++        ti = proto_tree_add_item(tree, proto_usbip, tvb, 0, -1, ENC_NA);
++        usbip_tree = proto_item_add_subtree(ti, ett_usbip);
++    }
++
++    /* check if the version matches */
++    if (version >= 0x0100 && version <= 0x0111) {
++        guint16 operation = tvb_get_ntohs(tvb, 2);
++
++        proto_tree_add_item(usbip_tree, hf_usbip_version, tvb, offset, 2, ENC_BIG_ENDIAN);
++        offset += 2;
++
++        proto_tree_add_item(usbip_tree, hf_usbip_operation, tvb, offset, 2, ENC_BIG_ENDIAN);
++        offset += 2;
++
++        proto_tree_add_item(usbip_tree, hf_usbip_status, tvb, offset, 4, ENC_BIG_ENDIAN);
++        offset += 4;
++
++        switch (operation) {
++        case OP_REQ_IMPORT:
++            offset = dissect_import_request(pinfo, usbip_tree, tvb, offset);
++            break;
++        case OP_REP_IMPORT:
++            offset = dissect_import_response(pinfo, usbip_tree, tvb, offset);
++            break;
++        case OP_REQ_DEVLIST:
++            offset = dissect_device_list_request(pinfo);
++            break;
++        case OP_REP_DEVLIST:
++            offset = dissect_device_list_response(pinfo, usbip_tree, tvb, offset);
++            break;
++        case OP_REQ_EXPORT:
++            offset = dissect_export_request(pinfo, usbip_tree, tvb, offset);
++            break;
++        case OP_REP_EXPORT:
++            offset = dissect_export_response(pinfo, usbip_tree, tvb, offset);
++            break;
++        case OP_REQ_UNEXPORT:
++            offset = dissect_unexport_request(pinfo, usbip_tree, tvb, offset);
++            break;
++        case OP_REP_UNEXPORT:
++            offset = dissect_unexport_response(pinfo, usbip_tree, tvb, offset);
++            break;
++        default:
++            proto_tree_add_item(usbip_tree, hf_usbip_urb_data, tvb, offset, -1, ENC_NA);
++            expert_add_info_format(pinfo, ti, &ei_usbip,
++                               "Dissector for USBIP Operation"
++                               " (%x) code not implemented, Contact"
++                               " Wireshark developers if you want this supported",
++                                       operation);
++            proto_item_append_text(ti, ": Undecoded");
++            break;
++        }
++    } else if (version == 0x0000) {
++        guint16 command = tvb_get_ntohl(tvb, 0);
++
++        proto_tree_add_item(usbip_tree, hf_usbip_command, tvb, offset, 4, ENC_BIG_ENDIAN);
++        offset += 4;
++        proto_tree_add_item(usbip_tree, hf_usbip_seqnum, tvb, offset, 4, ENC_BIG_ENDIAN);
++        offset += 4;
++        proto_tree_add_item(usbip_tree, hf_usbip_devid, tvb, offset, 4, ENC_BIG_ENDIAN);
++        offset += 4;
++        proto_tree_add_item(usbip_tree, hf_usbip_direction, tvb, offset, 4, ENC_BIG_ENDIAN);
++        offset += 4;
++        proto_tree_add_item(usbip_tree, hf_usbip_ep, tvb, offset, 4, ENC_BIG_ENDIAN);
++        offset += 4;
++
++        switch (command) {
++        case OP_CMD_SUBMIT:
++            offset = dissect_cmd_submit(pinfo, usbip_tree, tvb, offset);
++            dissect_usb_common(tvb, pinfo, tree, USB_HEADER_USBIP, NULL);
++            break;
++        case OP_CMD_UNLINK:
++            offset = dissect_cmd_unlink(pinfo, offset);
++            break;
++        case OP_RET_SUBMIT:
++            offset = dissect_ret_submit(pinfo, usbip_tree, tvb, offset);
++            dissect_usb_common(tvb, pinfo, tree, USB_HEADER_USBIP, NULL);
++            break;
++        case OP_RET_UNLINK:
++            offset = dissect_ret_unlink(pinfo, usbip_tree, tvb, offset);
++            break;
++        default:
++            proto_tree_add_item(usbip_tree, hf_usbip_urb_data, tvb, offset, -1, ENC_NA);
++            expert_add_info_format(pinfo, ti, &ei_usbip,
++                               "Dissector for USBIP Command"
++                               " (%x) code not implemented, Contact"
++                               " Wireshark developers if you want this supported",
++                                       command);
++            proto_item_append_text(ti, ": Undecoded");
++            break;
++        }
++    } else {
++        proto_tree_add_item(usbip_tree, hf_usbip_urb_data, tvb, offset, -1, ENC_NA);
++        expert_add_info_format(pinfo, ti, &ei_usbip,
++                               "Dissector for USBIP Version"
++                               " (%d.%d) code not implemented, Contact"
++                               " Wireshark developers if you want this supported",
++                                       version >> 8, version & 0xff);
++        proto_item_append_text(ti, ": Undecoded");
++    }
++    return tvb_captured_length(tvb);
++}
++
++/* Register the protocol with Wireshark */
++
++extern value_string_ext ext_usb_vendors_vals;
++
++void
++proto_register_usbip(void)
++{
++    /* Setup list of header fields  See Section 1.6.1 for details*/
++    static hf_register_info hf[] = {
++        { &hf_usbip_version,
++            { "Version", "usbip.version",
++            FT_UINT16, BASE_HEX, NULL, 0,
++            "Version number of the protocol", HFILL }},
++
++        { &hf_usbip_operation,
++            { "operation", "usbip.operation",
++            FT_UINT16, BASE_HEX |BASE_EXT_STRING, &usbip_operation_vals_ext, 0,
++            "USBIP Operation", HFILL }},
++
++        { &hf_usbip_command,
++            { "Command", "usbip.command",
++            FT_UINT32, BASE_HEX | BASE_EXT_STRING, &usbip_command_vals_ext, 0,
++            "USBIP Command", HFILL }},
++
++        { &hf_usbip_status,
++            { "Status", "usbip.status",
++            FT_INT32, BASE_DEC, NULL, 0,
++            "USBIP Status", HFILL }},
++            
++        { &hf_usbip_number_devices,
++            {"Number of exported Devices", "usbip.number_of_devices",
++            FT_UINT32, BASE_DEC, NULL, 0, NULL, HFILL }},
++        
++        { &hf_usbip_path,
++            {"System Path", "usbip.system_path",
++            FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL }},
++
++        { &hf_usbip_devid,
++            {"Devid", "usbip.devid",
++            FT_UINT32, BASE_HEX, NULL, 0, NULL, HFILL }},
++            
++        { &hf_usbip_busid,
++            {"Busid", "usbip.busid",
++            FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL }},
++
++        { &hf_usbip_busnum,
++            {"Bus number", "usbip.bus_num",
++            FT_UINT32, BASE_HEX, NULL, 0, NULL, HFILL }},
++            
++        { &hf_usbip_devnum,
++            {"Device Number", "usbip.dev_num",
++            FT_UINT32, BASE_HEX, NULL, 0, NULL, HFILL }},
++        
++        { &hf_usbip_speed,
++            {"Connected Speed", "usbip.speed",
++            FT_UINT32, BASE_HEX, NULL, 0, NULL, HFILL }},
++            
++        { &hf_usbip_idVendor,
++          { "idVendor", "usb.idVendor",
++            FT_UINT16, BASE_HEX | BASE_EXT_STRING, &ext_usb_vendors_vals, 0x0,
++            NULL, HFILL }},
++
++        { &hf_usbip_idProduct,
++          { "idProduct", "usb.idProduct",
++            FT_UINT16, BASE_HEX, NULL, 0x0,
++            NULL, HFILL }},
++
++        { &hf_usbip_bcdDevice,
++          { "bcdDevice", "usb.bcdDevice",
++            FT_UINT16, BASE_HEX, NULL, 0x0,
++            NULL, HFILL }},
++            
++        { &hf_usbip_bDeviceClass,
++          { "bDeviceClass", "usb.bDeviceClass",
++            FT_UINT8, BASE_HEX|BASE_EXT_STRING, &usb_class_vals_ext, 0x0,
++            NULL, HFILL }},
++
++        { &hf_usbip_bDeviceSubClass,
++          { "bDeviceSubClass", "usb.bDeviceSubClass",
++            FT_UINT8, BASE_DEC, NULL, 0x0,
++            NULL, HFILL }},
++
++        { &hf_usbip_bDeviceProtocol,
++          { "bDeviceProtocol", "usb.bDeviceProtocol",
++            FT_UINT8, BASE_DEC, NULL, 0x0,
++            NULL, HFILL }},
++
++        { &hf_usbip_bConfigurationValue,
++          { "bConfigurationValue", "usb.bConfigurationValue",
++            FT_UINT8, BASE_DEC, NULL, 0x0,
++            NULL, HFILL }},
++            
++        { &hf_usbip_bNumConfigurations,
++          { "bNumConfigurations", "usb.bNumConfigurations",
++            FT_UINT8, BASE_DEC, NULL, 0x0,
++            NULL, HFILL }},
++            
++        { &hf_usbip_bNumInterfaces,
++          { "bNumInterfaces", "usb.bNumInterfaces",
++            FT_UINT8, BASE_DEC, NULL, 0x0,
++            NULL, HFILL }},
++            
++        { &hf_usbip_bInterfaceClass,
++          { "bInterfaceClass", "usbip.bInterfaceClass",
++            FT_UINT8, BASE_HEX|BASE_EXT_STRING, &usb_class_vals_ext, 0x0,
++            NULL, HFILL }},
++
++        { &hf_usbip_bInterfaceSubClass,
++          { "bInterfaceSubClass", "usbip.bInterfaceSubClass",
++            FT_UINT8, BASE_HEX, NULL, 0x0,
++            NULL, HFILL }},       
++
++        { &hf_usbip_bInterfaceProtocol,
++          { "bInterfaceProtocol", "usbip.bInterfaceProtocol",
++            FT_UINT8, BASE_HEX, NULL, 0x0,
++            NULL, HFILL }},
++                                
++        { &hf_usbip_device,
++            {"Device", "usbip.device",
++            FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL }},
++
++        { &hf_usbip_interface,
++            {"Interface", "usbip.interface",
++            FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL }},
++
++        { &hf_usbip_interval,
++            { "Interval", "usbip.interval",
++            FT_UINT32, BASE_HEX, NULL, 0, "maximum time for the request on the server-side host controller", HFILL }},
++        
++        { &hf_usbip_actual_length,
++            { "Actual length", "usbip.actual_length",
++            FT_UINT32, BASE_HEX, NULL, 0, NULL, HFILL }},
++        
++        { &hf_usbip_error_count,
++            { "Error count", "usbip.error_count",
++            FT_UINT32, BASE_HEX, NULL, 0, NULL, HFILL }},
++            
++        { &hf_usbip_seqnum,
++            { "Sequence", "usbip.sequence_no",
++            FT_UINT32, BASE_HEX, NULL, 0,
++            "Sequence number of the urb", HFILL }},
++
++        { &hf_usbip_direction,
++          { "Direction", "usbip.endpoint_number.direction",
++            FT_UINT8, BASE_HEX, VALS(usb_endpoint_direction_vals), 0x1,
++            "USB endpoint direction", HFILL }},
++    
++        { &hf_usbip_ep,
++          { "Endpoint", "usbip.endpoint_number",
++            FT_UINT8, BASE_HEX, NULL, 0xf,
++            "USB endpoint number", HFILL }},
++
++        { &hf_usbip_transfer_flags,
++            { "Transfer flags", "usbip.transfer_flags",
++            FT_UINT32, BASE_HEX, NULL, 0,
++            "USBIP Transferflag", HFILL }},
++        
++        { &hf_usbip_transfer_buffer_length,
++            { "Transfer buffer length", "usbip.transfer_buffer_length",
++            FT_UINT32, BASE_HEX, NULL, 0, NULL, HFILL }},
++
++        { &hf_usbip_start_frame,
++            { "Start frame", "usbip.start_frame",
++            FT_UINT32, BASE_HEX, NULL, 0, "for an ISO frame the actually selected frame to transmit", HFILL }},
++            
++        { &hf_usbip_number_of_packets,
++            { "Number of Packets", "usbip.num_of_packets",
++            FT_UINT32, BASE_HEX, NULL, 0, NULL, HFILL }},
++            
++        { &hf_usbip_setup,
++            {"Setup", "usbip.setup",
++            FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL }},
++        
++        { &hf_usbip_urb_data,
++            {"Data", "usbip.data",
++            FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL }},
++    };
++
++    static gint *ett[] = {
++        &ett_usbip,
++        &ett_usbip_dev,
++        &ett_usbip_intf,
++        &ett_usbip_transfer_flag,
++    };
++    
++    static ei_register_info ei[] = {
++        { &ei_usbip, { "usbip.unsupported_version", PI_MALFORMED, PI_ERROR, "Unsupported element", EXPFILL }},
++    };
++
++    expert_module_t *expert_usbip;
++
++    expert_usbip = expert_register_protocol(proto_usbip);
++    expert_register_field_array(expert_usbip, ei, array_length(ei));
++    proto_usbip = proto_register_protocol("USBIP Protocol", "USBIP", "usbip");
++    proto_register_field_array(proto_usbip, hf, array_length(hf));
++    proto_register_subtree_array(ett, array_length(ett));
++}
++
++void
++proto_reg_handoff_usbip(void)
++{
++    dissector_handle_t usbip_handle;
++
++    usbip_handle = create_dissector_handle(dissect_usbip, proto_usbip);
++    dissector_add_uint("tcp.port", TCP_PORT_USBIP, usbip_handle);
++    
++    data_handle = find_dissector("data");
++}
++
++/*
++ * Editor modelines  -  http://www.wireshark.org/tools/modelines.html
++ *
++ * Local Variables:
++ * c-basic-offset: 2
++ * tab-width: 8
++ * indent-tabs-mode: nil
++ * End:
++ *
++ * ex: set shiftwidth=2 tabstop=8 expandtab:
++ * :indentSize=2:tabSize=8:noTabs=true:
++ */
+diff --git a/epan/dissectors/packet-usbip.h b/epan/dissectors/packet-usbip.h
+new file mode 100644
+index 0000000..f278350
+--- /dev/null
++++ b/epan/dissectors/packet-usbip.h
+@@ -0,0 +1,77 @@
++/* packet-usbip.h
++ * Definitions for USBIP dissection
++ * Copyright 2016, Christian Lamparter <chunkeey@googlemail.com>
++ *
++ * Wireshark - Network traffic analyzer
++ * By Gerald Combs <gerald@wireshark.org>
++ * Copyright 1998 Gerald Combs
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
++ */
++
++#ifndef __PACKET_USBIP_H__
++#define __PACKET_USBIP_H__
++
++#define TCP_PORT_USBIP  3240
++
++#define OP_REQUEST      (0x80 << 8)
++#define OP_REPLY        (0x00 << 8)
++
++/* ---------------------------------------------------------------------- */
++/* Import a remote USB device. */
++#define OP_IMPORT       0x03
++#define OP_REQ_IMPORT   (OP_REQUEST | OP_IMPORT)
++#define OP_REP_IMPORT   (OP_REPLY   | OP_IMPORT)
++
++/* ---------------------------------------------------------------------- */
++/* Retrieve the list of exported USB devices. */
++#define OP_DEVLIST      0x05
++#define OP_REQ_DEVLIST  (OP_REQUEST | OP_DEVLIST)
++#define OP_REP_DEVLIST  (OP_REPLY   | OP_DEVLIST)
++
++/* ---------------------------------------------------------------------- */
++/* Export a USB device to a remote host. */
++#define OP_EXPORT       0x06
++#define OP_REQ_EXPORT   (OP_REQUEST | OP_EXPORT)
++#define OP_REP_EXPORT   (OP_REPLY   | OP_EXPORT)
++
++/* ---------------------------------------------------------------------- */
++/* un-Export a USB device from a remote host. */
++#define OP_UNEXPORT     0x07
++#define OP_REQ_UNEXPORT (OP_REQUEST | OP_UNEXPORT)
++#define OP_REP_UNEXPORT (OP_REPLY   | OP_UNEXPORT)
++
++#define OP_CMD_SUBMIT        0x0001
++#define OP_CMD_UNLINK        0x0002
++#define OP_RET_SUBMIT        0x0003
++#define OP_RET_UNLINK        0x0004
++
++#define USBIP_DIR_OUT       0x00
++#define USBIP_DIR_IN        0x01
++
++#endif
++
++/*
++ * Editor modelines  -  http://www.wireshark.org/tools/modelines.html
++ *
++ * Local variables:
++ * c-basic-offset: 4
++ * tab-width: 8
++ * indent-tabs-mode: nil
++ * End:
++ *
++ * vi: set shiftwidth=4 tabstop=8 expandtab:
++ * :indentSize=4:tabSize=8:noTabs=true:
++ */
+-- 
+2.7.0
+
