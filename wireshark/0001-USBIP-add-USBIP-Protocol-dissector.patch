@@ -1,4 +1,4 @@
-From d25209fea4964f82c9a566a3aa95ef469b31185d Mon Sep 17 00:00:00 2001
+From f3ee0733cf539c27b1fd8ab09894b8a859a3154b Mon Sep 17 00:00:00 2001
 From: Christian Lamparter <chunkeey@googlemail.com>
 Date: Sun, 31 Jan 2016 03:07:45 +0100
 Subject: [PATCH] [WIP] USBIP: add USBIP Protocol dissector
@@ -37,23 +37,23 @@ Change-Id: I4e557dc274017eb029c7af2717a62be4b00aebda
  epan/dissectors/Makefile.common |    1 +
  epan/dissectors/packet-usb.c    |  124 ++++-
  epan/dissectors/packet-usb.h    |   10 +-
- epan/dissectors/packet-usbip.c  | 1155 +++++++++++++++++++++++++++++++++++++++
+ epan/dissectors/packet-usbip.c  | 1121 +++++++++++++++++++++++++++++++++++++++
  epan/dissectors/packet-usbip.h  |   54 ++
- 7 files changed, 1339 insertions(+), 7 deletions(-)
+ 7 files changed, 1305 insertions(+), 7 deletions(-)
  create mode 100644 epan/dissectors/packet-usbip.c
  create mode 100644 epan/dissectors/packet-usbip.h
 
 diff --git a/docbook/release-notes.asciidoc b/docbook/release-notes.asciidoc
-index f9bc104..91cd0ef 100644
+index f9bc104..a89127c 100644
 --- a/docbook/release-notes.asciidoc
 +++ b/docbook/release-notes.asciidoc
-@@ -55,6 +55,7 @@ Zigbee Protocol Clusters Dissectors Added (Closures, Lighting, General, Measurem
- LAT protocol (DECNET)
+@@ -56,6 +56,7 @@ LAT protocol (DECNET)
  Ericsson IPOS Kernel Packet Header Dissector Added (IPOS)
  STANAG 5602 SIMPLE
-+USBIP Protocol
  UserLog Protocol
++USBIP Protocol
  // Items in --sort-and-group-- blocks will be sorted and comma-separated.
+ --sort-and-group--
  --sort-and-group--
 diff --git a/epan/CMakeLists.txt b/epan/CMakeLists.txt
 index 4073130..c360357 100644
@@ -370,10 +370,10 @@ index 0dfd3f2..0a3843e 100644
  
 diff --git a/epan/dissectors/packet-usbip.c b/epan/dissectors/packet-usbip.c
 new file mode 100644
-index 0000000..fe57535
+index 0000000..c359321
 --- /dev/null
 +++ b/epan/dissectors/packet-usbip.c
-@@ -0,0 +1,1155 @@
+@@ -0,0 +1,1121 @@
 +/* packet-usbip.c
 + * Routines for USB/IP dissection
 + * Copyright 2016, Christian Lamparter <chunkeey@googlemail.com>
@@ -398,16 +398,16 @@ index 0000000..fe57535
 + */
 +
 +/*
-+ * The USB/IP protocol follows a server/client architecture. The server exports the
-+ * USB devices and the clients imports them. The device driver for the exported
-+ * USB device runs on the client machine.
++ * The USB/IP protocol follows a server/client architecture. It runs
++ * on top of TCP/IP. The server exports the USB devices and the
++ * clients imports them. The device driver for the exported USB
++ * device runs on the client machine.
 + */
 +
 +#include <config.h>
 +
 +#include <epan/packet.h>
 +#include <epan/expert.h>
-+#include <epan/prefs.h>    /* Include only as needed */
 +#include <epan/etypes.h>
 +#include <epan/conversation.h>
 +
@@ -600,9 +600,6 @@ index 0000000..fe57535
 +    guint32 vendor_id;
 +    guint32 product_id;
 +
-+    if (tvb_reported_length_remaining(tvb, offset) < 0x138)
-+        return 0;
-+
 +    /* Device path on host (usually /sys/devices/usb/... */
 +    proto_tree_add_item(tree, hf_usbip_path, tvb, offset, 256, ENC_NA);
 +    offset += 256;
@@ -646,38 +643,31 @@ index 0000000..fe57535
 +    offset += 2;
 +
 +    /* bcdDevice */
-+    proto_tree_add_item(tree, hf_usbip_bcdDevice, tvb, offset, 2,
-+                        ENC_BIG_ENDIAN);
++    proto_tree_add_item(tree, hf_usbip_bcdDevice, tvb, offset, 2, ENC_BIG_ENDIAN);
 +    offset += 2;
 +
 +    /* Device Class */
-+    proto_tree_add_item(tree, hf_usbip_bDeviceClass, tvb, offset, 1,
-+                        ENC_BIG_ENDIAN);
++    proto_tree_add_item(tree, hf_usbip_bDeviceClass, tvb, offset, 1, ENC_BIG_ENDIAN);
 +    offset += 1;
 +
 +    /* Device Sub Class */
-+    proto_tree_add_item(tree, hf_usbip_bDeviceSubClass, tvb, offset, 1,
-+                        ENC_BIG_ENDIAN);
++    proto_tree_add_item(tree, hf_usbip_bDeviceSubClass, tvb, offset, 1, ENC_BIG_ENDIAN);
 +    offset += 1;
 +
 +    /* Device Protocol */
-+    proto_tree_add_item(tree, hf_usbip_bDeviceProtocol, tvb, offset, 1,
-+                        ENC_BIG_ENDIAN);
++    proto_tree_add_item(tree, hf_usbip_bDeviceProtocol, tvb, offset, 1, ENC_BIG_ENDIAN);
 +    offset += 1;
 +
 +    /* Current Configuration */
-+    proto_tree_add_item(tree, hf_usbip_bConfigurationValue, tvb, offset, 1,
-+                        ENC_BIG_ENDIAN);
++    proto_tree_add_item(tree, hf_usbip_bConfigurationValue, tvb, offset, 1, ENC_BIG_ENDIAN);
 +    offset += 1;
 +
 +    /* Number of Configurations */
-+    proto_tree_add_item(tree, hf_usbip_bNumConfigurations, tvb, offset, 1,
-+                        ENC_BIG_ENDIAN);
++    proto_tree_add_item(tree, hf_usbip_bNumConfigurations, tvb, offset, 1, ENC_BIG_ENDIAN);
 +    offset += 1;
 +
 +    /* Number of Interfaces */
-+    proto_tree_add_item(tree, hf_usbip_bNumInterfaces, tvb, offset, 1,
-+                        ENC_BIG_ENDIAN);
++    proto_tree_add_item(tree, hf_usbip_bNumInterfaces, tvb, offset, 1, ENC_BIG_ENDIAN);
 +    offset += 1;
 +    return offset;
 +}
@@ -703,52 +693,34 @@ index 0000000..fe57535
 +    num_of_devs = tvb_get_ntohl(tvb, offset);
 +    offset += 4;
 +
-+    for (i = 0; i < num_of_devs; i++)
-+    {
-+        if (tvb_reported_length_remaining(tvb, offset) < 0x138) {
-+            return offset;
-+        }
-+
++    for (i = 0; i < num_of_devs; i++) {
 +        num_of_intf = tvb_get_guint8(tvb, offset + 0x137);
-+        ti_dev =
-+            proto_tree_add_uint(tree, hf_usbip_device, tvb, offset, 0x138 + 4 *
-+                                num_of_intf,
-+                                i + 1);
++        ti_dev = proto_tree_add_uint(tree, hf_usbip_device, tvb, offset,
++                                     0x138 + 4 * num_of_intf, i + 1);
 +        PROTO_ITEM_SET_GENERATED(ti_dev);
 +
 +        dev_tree = proto_item_add_subtree(ti_dev, ett_usbip_dev);
 +        offset = dissect_device(dev_tree, tvb, offset);
 +
-+        for (j = 0; j < num_of_intf; j++)
-+        {
-+            if (tvb_reported_length_remaining(tvb, offset) < 0x4) {
-+                return offset;
-+            }
-+
-+            ti_intf =
-+                proto_tree_add_uint(dev_tree, hf_usbip_interface, tvb, offset,
-+                                    3,
-+                                    j + 1);
++        for (j = 0; j < num_of_intf; j++) {
++            ti_intf = proto_tree_add_uint(dev_tree, hf_usbip_interface, tvb,
++                                          offset, 3, j + 1);
 +            intf_tree = proto_item_add_subtree(ti_intf, ett_usbip_intf);
 +
 +            proto_tree_add_item(intf_tree, hf_usbip_bInterfaceClass, tvb,
-+                                offset, 1,
-+                                ENC_BIG_ENDIAN);
++                                offset, 1, ENC_BIG_ENDIAN);
 +            offset += 1;
 +
 +            proto_tree_add_item(intf_tree, hf_usbip_bInterfaceSubClass, tvb,
-+                                offset, 1,
-+                                ENC_BIG_ENDIAN);
++                                offset, 1, ENC_BIG_ENDIAN);
 +            offset += 1;
 +
 +            proto_tree_add_item(intf_tree, hf_usbip_bInterfaceProtocol, tvb,
-+                                offset, 1,
-+                                ENC_BIG_ENDIAN);
++                                offset, 1, ENC_BIG_ENDIAN);
 +            offset += 1;
 +
 +            proto_tree_add_item(intf_tree, hf_usbip_padding, tvb,
-+                                offset, 1,
-+                                ENC_BIG_ENDIAN);
++                                offset, 1, ENC_BIG_ENDIAN);
 +            offset += 1;
 +        }
 +    }
@@ -777,10 +749,6 @@ index 0000000..fe57535
 +                   int offset)
 +{
 +    col_set_str(pinfo->cinfo, COL_INFO, "URB Submit");
-+
-+    if (tvb_reported_length_remaining(tvb, offset) < 28) {
-+        return offset;
-+    }
 +
 +    proto_tree_add_item(tree, hf_usbip_transfer_flags, tvb, offset, 4,
 +                        ENC_BIG_ENDIAN);
@@ -812,10 +780,6 @@ index 0000000..fe57535
 +                   int offset)
 +{
 +    col_set_str(pinfo->cinfo, COL_INFO, "URB Response");
-+
-+    if (tvb_reported_length_remaining(tvb, offset) < 28) {
-+        return offset;
-+    }
 +
 +    proto_tree_add_item(tree, hf_usbip_status, tvb, offset, 4, ENC_BIG_ENDIAN);
 +    offset += 4;
@@ -851,10 +815,6 @@ index 0000000..fe57535
 +    guint32 seqnum;
 +
 +    col_set_str(pinfo->cinfo, COL_INFO, "URB Unlink");
-+
-+    if (tvb_reported_length_remaining(tvb, offset) < 0x4) {
-+        return offset;
-+    }
 +
 +    proto_tree_add_item_ret_uint(tree, hf_usbip_seqnum, tvb, offset, 4, ENC_BIG_ENDIAN, &seqnum);
 +    trans->unlink_seqnum = seqnum;
@@ -1098,11 +1058,9 @@ index 0000000..fe57535
 +
 +    usbip_info = usbip_get_usbip_conv(pinfo);
 +
-+    if (tree) {
-+        /* create display subtree for the protocol */
-+        ti = proto_tree_add_item(tree, proto_usbip, tvb, 0, -1, ENC_NA);
-+        usbip_tree = proto_item_add_subtree(ti, ett_usbip);
-+    }
++    /* create display subtree for the protocol */
++    ti = proto_tree_add_item(tree, proto_usbip, tvb, 0, -1, ENC_NA);
++    usbip_tree = proto_item_add_subtree(ti, ett_usbip);
 +
 +    /* Get some values from the packet header */
 +    version = tvb_get_ntohs(tvb, 0);
@@ -1120,7 +1078,7 @@ index 0000000..fe57535
 +        expert_add_info_format(
 +            pinfo, ti, &ei_usbip,
 +            "Dissector for USBIP Version"
-+            " (%d.%d) code not implemented, Contact"
++            " (%d.%d) not implemented, Contact"
 +            " Wireshark developers if you want this supported",
 +            version >> 8, version & 0xff);
 +        proto_item_append_text(ti, ": Undecoded");
@@ -1139,6 +1097,25 @@ index 0000000..fe57535
 +    /* Get some values from the packet header */
 +    version = tvb_get_ntohs(tvb, offset);
 +
++    /* The USBIP's is split in two parts.
++     * There's an userspace portion which consists of the usbipd daemon
++     * and usbip tool.
++     * The kernel part is done by two modules usbip-host.ko and vhci-hcd.ko (client).
++     *
++     * The userspace programs are generating and parsing the OP_REQ_* and OP_REP_*
++     * data packets. They have all have a proper protocol version field. But data
++     * can be split up in multiple packages, so reassembly is required. There's no
++     * session id or sequence number to track packages.
++     *
++     * The kernel modules are handling the OP_CMD_* and OP_RET_* data packets.
++     * There's no protocol version (The version is simply always 0x0000, because
++     * the OP_CMD|RET are 4-Bytes long, whereas OP_REQ/OP_REP are only 2-Bytes).
++     * data frames can be split into multiple packages. But it also can happen that
++     * multiple data frames are aggregated into a single package. The OP_CMD_* and
++     * OP_RET_* frames have a 4-Byte sequence number to track individual URBs. The
++     * sequence counter will wrap around eventually.
++     */
++
 +    if (version == USBIP_SUPPORTED_VERSION) {
 +        guint16 op = tvb_get_ntohs(tvb, offset + 2);
 +
@@ -1147,10 +1124,6 @@ index 0000000..fe57535
 +            return 40;
 +
 +        case OP_REP_IMPORT:
-+            if (tvb_captured_length(tvb) < 0x8) {
-+                return 0;
-+            }
-+
 +            if (tvb_get_ntohl(tvb, offset + 4) == 0) {
 +                /* Status: OK */
 +                return 0x140;
@@ -1172,34 +1145,30 @@ index 0000000..fe57535
 +            }
 +
 +            offset += 8;
++
 +            num_of_devs = tvb_get_ntohl(tvb, offset);
 +            offset += 4;
 +
 +            if (num_of_devs == 0)
 +                return expected_size;
 +
-+            if (tvb_reported_length_remaining(tvb,
-+                                              offset) <
-+                (gint) (0x138 * num_of_devs))
++            if (tvb_captured_length_remaining(tvb, offset) < (gint) (0x138 * num_of_devs))
 +                return 0;
 +
-+            for (unsigned int i = 0; i < num_of_devs; i++)
-+            {
++            for (unsigned int i = 0; i < num_of_devs; i++) {
 +                guint8 num_of_intf = tvb_get_guint8(tvb, offset + 0x137);
 +                int skip = num_of_intf * 4;
++
 +                expected_size += 0x138 + skip;
 +                offset += 0x138 + skip;
 +            }
-+
 +            return expected_size;
 +        }
-+        default:
-+            return 0;
 +        }
 +    } else if (version == 0x0000) {
 +        guint32 cmd = tvb_get_ntohl(tvb, offset);
 +
-+        if (tvb_reported_length_remaining(tvb, offset) < USBIP_HEADER_LEN)
++        if (tvb_captured_length_remaining(tvb, offset) < USBIP_HEADER_LEN)
 +            return 0;
 +
 +        switch (cmd) {
@@ -1244,9 +1213,6 @@ index 0000000..fe57535
 +
 +            return expected_size;
 +        }
-+
-+        default:
-+            return tvb_captured_length(tvb);
 +        }
 +    }
 +
